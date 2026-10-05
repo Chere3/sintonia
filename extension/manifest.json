@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sintonía",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Filtra y reentrena tu feed de YouTube según tus temas y la hora del día.",
   "permissions": ["storage"],
   "host_permissions": [
@@ -16,7 +16,7 @@
       "matches": ["https://www.youtube.com/*"],
       "js": ["content.js"],
       "css": ["content.css"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "action": { "default_popup": "popup.html", "default_title": "Sintonía" },

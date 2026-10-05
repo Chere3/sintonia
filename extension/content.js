@@ -1,23 +1,50 @@
-// Runs on youtube.com. Touches the home feed and the watch-page sidebar.
-// YouTube recycles renderer nodes on scroll, so every decision is keyed by
-// video id and re-checked against the node's current id.
+// Runs on youtube.com at document_start. Touches the home feed and the
+// watch-page sidebar. YouTube recycles renderer nodes on scroll, so every
+// decision is keyed by video id and re-checked against the node's current id.
+//
+// Fail-closed: content.css veils every yt-lockup-view-model that lacks
+// data-sintonia-decided (invisible, unclickable) on pages flagged by
+// html[data-sintonia-page]. The mark lives on the lockup, not on the card:
+// YouTube reuses ytd-rich-item-renderer across feeds but always creates a
+// fresh lockup for a new video, so a recycled card starts veiled by itself.
+// It becomes visible once it has a decision, or after WATCHDOG_MS as a last
+// resort so a dead service worker never blanks YouTube.
 
 const ITEMS = {
   "/": "ytd-rich-item-renderer",
   "/watch": "#related yt-lockup-view-model",
 };
-const decisions = new Map(); // videoId -> { action, reason, feedback }
+const PAGE_KIND = { "/": "home", "/watch": "watch" };
+const WATCHDOG_MS = 4000;
+const RECHECK_MS = 8000;
+
+const decisions = new Map(); // videoId -> { action, reason, feedback, ... }
 const details = new Map(); // videoId -> { category, keywords, description } | null (fetch failed)
+const recheckNow = new Set(); // provisional decisions to ask about again
 let profileId = null;
 let profileName = "";
 let scanTimer = null;
 let retryTimer = null;
 let inFlight = false;
+let enabled = true;
+// YouTube renders the next page's cards before it updates location (that
+// happens around yt-navigate-finish), so the target path is tracked from
+// yt-navigate-start; with location.pathname the home cards waited for
+// navigation to finish before being scanned.
+let pagePath = location.pathname;
 
 const MENU_TEXT = {
   video: /^(not interested|no me interesa)$/i,
   channel: /^(don't recommend channel|no recomendar (este )?canal)$/i,
 };
+
+// The veil only applies where Sintonía filters; elsewhere (subscriptions,
+// search) and when disabled, the attribute is absent and YouTube is untouched.
+function setPage(path = pagePath) {
+  const kind = enabled ? PAGE_KIND[path] : null;
+  if (kind) document.documentElement.dataset.sintoniaPage = kind;
+  else delete document.documentElement.dataset.sintoniaPage;
+}
 
 function videoIdOf(el) {
   const host = el.querySelector(".ytLockupViewModelHost");
@@ -44,19 +71,24 @@ function extract(el, id) {
   return v;
 }
 
+function lockupOf(el) {
+  return el.matches("yt-lockup-view-model") ? el : el.querySelector("yt-lockup-view-model");
+}
+
 function clearMarks(el) {
-  el.classList.remove("sintonia-oculto", "sintonia-revelado", "sintonia-pendiente");
+  el.classList.remove("sintonia-oculto", "sintonia-revelado");
   el.querySelector(":scope > .sintonia-badge")?.remove();
   el.removeAttribute("title");
+  const lock = lockupOf(el);
+  if (lock) delete lock.dataset.sintoniaDecided;
 }
 
 function apply(el, d) {
   clearMarks(el);
-  if (!d) return;
-  if (d.action === "pending") {
-    el.classList.add("sintonia-pendiente");
-    el.title = "Sintonía: esperando transcripción";
-  } else if (d.action === "hide") {
+  if (!d || d.action === "pending") return; // stays veiled
+  const lock = lockupOf(el);
+  if (lock) lock.dataset.sintoniaDecided = el.dataset.sintoniaId;
+  if (d.action === "hide") {
     el.classList.add("sintonia-oculto");
     const badge = document.createElement("div");
     badge.className = "sintonia-badge";
@@ -77,7 +109,7 @@ function apply(el, d) {
 }
 
 function itemSelector() {
-  return ITEMS[location.pathname] || null;
+  return ITEMS[pagePath] || null;
 }
 
 async function scan() {
@@ -90,16 +122,20 @@ async function scan() {
     }
     return;
   }
-  if (inFlight) return;
+  const now = Date.now();
   const items = [...document.querySelectorAll(selector)];
   const ask = [];
   for (const el of items) {
     const id = videoIdOf(el);
-    if (!id) continue; // ads, shelves
+    if (!id) continue; // ads, shelves: no lockup, never veiled
+    const lock = lockupOf(el);
+    // A replaced lockup carries no mark: force a re-apply for this card.
+    if (el.dataset.sintoniaId !== id || !lock?.dataset.sintoniaDecided) el.dataset.sintoniaApplied = "";
     if (el.dataset.sintoniaId !== id) {
       clearMarks(el);
       el.dataset.sintoniaId = id;
       el.dataset.sintoniaApplied = "";
+      el.dataset.sintoniaSeen = now;
     }
     const d = decisions.get(id);
     if (d) {
@@ -109,11 +145,16 @@ async function scan() {
         apply(el, d);
         el.dataset.sintoniaApplied = marker;
       }
-    } else if (!ask.some((v) => v.id === id)) {
-      ask.push(extract(el, id));
+      if (recheckNow.has(id)) {
+        recheckNow.delete(id);
+        ask.push(extract(el, id));
+      }
+    } else if (now - el.dataset.sintoniaSeen > WATCHDOG_MS && !lock?.dataset.sintoniaDecided) {
+      apply(el, { action: "show", reason: "sin respuesta" }); // last resort, see header
     }
+    if (!d && !ask.some((v) => v.id === id)) ask.push(extract(el, id));
   }
-  if (!ask.length) return;
+  if (!ask.length || inFlight) return;
 
   inFlight = true;
   let res;
@@ -126,37 +167,53 @@ async function scan() {
   }
   if (!res?.ok) return;
   if (res.disabled) {
+    enabled = false;
+    setPage();
     decisions.clear();
     for (const el of items) clearMarks(el);
     return;
   }
-  if (profileId && profileId !== res.profile.id) decisions.clear();
-  profileId = res.profile.id;
-  profileName = res.profile.nombre;
+  receive(res);
+}
 
+// Handles both the immediate reply and results pushed later by the service
+// worker as each classification finishes.
+function receive({ profile, decisions: incoming }) {
+  if (profileId && profileId !== profile.id) decisions.clear();
+  profileId = profile.id;
+  profileName = profile.nombre;
   let anyPending = false;
-  for (const [id, d] of Object.entries(res.decisions)) {
+  for (const [id, d] of Object.entries(incoming)) {
     decisions.set(id, d);
     if (d.feedback) enqueueFeedback(id, d.feedback);
     if (d.needDetails) enqueueDetails(id);
     if (d.action === "pending") anyPending = true;
+    if (d.retry) setTimeout(() => (recheckNow.add(id), scheduleScan(0)), RECHECK_MS);
   }
   scheduleScan(0);
   if (anyPending) scheduleRetry();
 }
 
-// Pending items are dropped from the local map so the next scan asks again.
+// Safety net if a pushed result never arrives (service worker evicted
+// mid-job): forget pending entries so the next scan asks again.
 function scheduleRetry() {
   clearTimeout(retryTimer);
   retryTimer = setTimeout(() => {
     for (const [id, d] of decisions) if (d.action === "pending") decisions.delete(id);
     scheduleScan(0);
-  }, 4000);
+  }, 5000);
 }
 
-function scheduleScan(delay = 300) {
+// Throttle, not debounce: while YouTube renders a feed it mutates the DOM
+// continuously, and a debounce kept postponing the scan (~160 ms on a cache
+// hit). An already scheduled scan is never pushed back; delay 0 pulls it in.
+function scheduleScan(delay = 50) {
+  if (scanTimer && delay > 0) return;
   clearTimeout(scanTimer);
-  scanTimer = setTimeout(scan, delay);
+  scanTimer = setTimeout(() => {
+    scanTimer = null;
+    scan();
+  }, delay);
 }
 
 // Marks stay until the new decision arrives, so nothing flickers.
@@ -352,7 +409,20 @@ function checkAutoplayLanding() {
 // --- Wiring ---
 
 new MutationObserver(() => scheduleScan()).observe(document.documentElement, { childList: true, subtree: true });
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "decisions") receive(msg);
+});
+// Flag the next page before YouTube renders it, so its cards start veiled.
+document.addEventListener("yt-navigate-start", (e) => {
+  const url = e.detail?.url;
+  if (!url) return;
+  pagePath = new URL(url, location.origin).pathname;
+  setPage();
+  scheduleScan(0);
+});
 document.addEventListener("yt-navigate-finish", () => {
+  pagePath = location.pathname;
+  setPage();
   checkAutoplayLanding();
   scheduleScan(0);
 });
@@ -361,8 +431,20 @@ document.addEventListener("ended", onVideoEnded, true);
 for (const type of ["pointerdown", "keydown"])
   document.addEventListener(type, (e) => e.isTrusted && (lastUserInput = Date.now()), true);
 chrome.storage.onChanged.addListener((changes) => {
+  if (changes.config) {
+    enabled = changes.config.newValue?.enabled !== false;
+    setPage();
+  }
   if (changes.config || changes.override) resetAll();
 });
+setPage();
+chrome.runtime.sendMessage({ type: "warmup" }).catch(() => {});
+chrome.storage.local.get("config").then(({ config }) => {
+  enabled = config?.enabled !== false;
+  setPage();
+});
+// The watchdog needs a tick even when the page is quiet.
+setInterval(() => scheduleScan(0), 1000);
 // Profiles switch by clock; re-evaluate every few minutes.
 setInterval(resetAll, 5 * 60 * 1000);
 scheduleScan(0);

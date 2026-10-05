@@ -12,30 +12,77 @@ import {
   migrateConfig,
 } from "./core.js";
 
-const CACHE_MAX = 5000;
 const LOG_MAX = 300;
-const CONCURRENCY = 8;
+const CONCURRENCY = 20; // Jev allows 40 rps; a page is rarely more than 50 cards
 // Bump when the shape of cached classifications changes (v2: probabilities).
 const CLS_VERSION = 2;
+// One storage key per video: every request costs O(batch), not O(cache).
+const clsKey = (id) => `cls:${id}`;
+
+// Hot-path state lives in memory; storage is only the backing copy. The
+// service worker can be evicted at any time, so everything here is a cache.
+let configCache = null;
+let overrideCache; // undefined = not loaded
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.config) configCache = null;
+  if (changes.override) overrideCache = undefined;
+});
 
 async function getConfig() {
+  if (configCache) return configCache;
   let { config } = await chrome.storage.local.get("config");
   if (config) {
     const migrated = migrateConfig(config);
     if (migrated !== config) await chrome.storage.local.set({ config: (config = migrated) });
   }
-  return {
+  return (configCache = {
     ...DEFAULT_CONFIG,
     ...config,
     feedback: { ...DEFAULT_CONFIG.feedback, ...config?.feedback },
     transcripts: { ...DEFAULT_CONFIG.transcripts, ...config?.transcripts },
-  };
+  });
+}
+
+async function getOverride() {
+  if (overrideCache === undefined) overrideCache = (await chrome.storage.local.get("override")).override || null;
+  return overrideCache;
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
   const { config } = await chrome.storage.local.get("config");
   if (!config) await chrome.storage.local.set({ config: DEFAULT_CONFIG });
+  await chrome.storage.local.remove("cls"); // pre-0.2 single-blob cache
 });
+
+// Global limiter: classification jobs run detached from the request that
+// started them, so concurrency is bounded here rather than per batch.
+let active = 0;
+const waiting = [];
+async function limited(fn) {
+  while (active >= CONCURRENCY) await new Promise((r) => waiting.push(r));
+  active++;
+  try {
+    return await fn();
+  } finally {
+    active--;
+    waiting.shift()?.();
+  }
+}
+
+// Stats are lossy by design: counted in memory, flushed every 2 s.
+let stats = null;
+let lastError = null;
+let flushTimer = null;
+async function countDecision(d) {
+  stats ??= (await chrome.storage.local.get("stats")).stats || { ocultos: 0, mostrados: 0, errores: 0 };
+  if (d.action === "hide") stats.ocultos++;
+  else if (d.action === "show" && !d.retry) stats.mostrados++;
+  if (d.error) stats.errores++;
+  flushTimer ??= setTimeout(() => {
+    flushTimer = null;
+    chrome.storage.local.set({ stats, lastError });
+  }, 2000);
+}
 
 async function callClassifier(config, video) {
   const body = buildRequest(config, video);
@@ -74,15 +121,6 @@ async function getTranscripts(config, ids) {
   }
 }
 
-async function pool(items, n, fn) {
-  const queue = [...items];
-  await Promise.all(
-    Array.from({ length: Math.min(n, queue.length) }, async () => {
-      while (queue.length) await fn(queue.shift());
-    })
-  );
-}
-
 async function appendLog(entries) {
   if (!entries.length) return;
   const { feedbackLog = [] } = await chrome.storage.local.get("feedbackLog");
@@ -92,7 +130,18 @@ async function appendLog(entries) {
 
 // Decides which hide decisions may become real YouTube feedback, honoring
 // the mode, the hourly cap, and never sending twice for the same video.
+// Feedback bookkeeping is read-modify-write; streamed results arrive
+// concurrently, so calls are serialized.
+let feedbackChain = Promise.resolve();
+function gateFeedbackSerial(...args) {
+  return (feedbackChain = feedbackChain.then(() => gateFeedback(...args)).catch(() => {}));
+}
+
 async function gateFeedback(config, profile, videos, decisions) {
+  if (config.feedback.modo === "apagado" || !videos.some((v) => decisions[v.id]?.action === "hide" && decisions[v.id].feedback)) {
+    for (const v of videos) if (decisions[v.id]) decisions[v.id].feedback = null;
+    return;
+  }
   const { feedbackSent = [], feedbackDone = {} } = await chrome.storage.local.get(["feedbackSent", "feedbackDone"]);
   let { recent } = feedbackAllowed(feedbackSent, config.feedback.maxPorHora);
   const log = [];
@@ -119,84 +168,102 @@ async function gateFeedback(config, profile, videos, decisions) {
   await appendLog(log);
 }
 
-async function classify(videos) {
+const inflight = new Set();
+
+async function classifyAndStore(config, key, video, src) {
+  const c = await limited(() => callClassifier(config, video));
+  const entry = { ...c, k: key, src, ts: Date.now() };
+  await chrome.storage.local.set({ [clsKey(video.id)]: entry });
+  return entry;
+}
+
+// Decision for a cached entry when no network work is needed, else null.
+function decideCached(config, profile, video, entry) {
+  if (needsDetails(config, profile, entry)) {
+    // Details come from the content script (same-origin request).
+    return video.details === undefined ? { action: "pending", reason: "buscando descripción", needDetails: true } : null;
+  }
+  if (needsTranscript(config, profile, entry)) return null;
+  return decideFromTopic(config, profile, entry);
+}
+
+// Walks one video through title → details → transcript and pushes the result
+// to the tab as soon as it exists. Never blocks the request that started it.
+async function advance(config, profile, key, video, entry, push) {
+  if (inflight.has(video.id)) return;
+  inflight.add(video.id);
+  try {
+    entry ??= await classifyAndStore(config, key, video, "titulo");
+    if (needsDetails(config, profile, entry)) {
+      if (video.details === undefined) return push({ action: "pending", reason: "buscando descripción", needDetails: true });
+      if (video.details) entry = await classifyAndStore(config, key, video, "detalles");
+      else {
+        entry = { ...entry, src: "detalles" }; // details fetch failed: go on to the transcript
+        await chrome.storage.local.set({ [clsKey(video.id)]: entry });
+      }
+    }
+    if (needsTranscript(config, profile, entry)) {
+      const t = (await getTranscripts(config, [video.id]))?.items[video.id];
+      if (t && typeof t === "object") entry = await classifyAndStore(config, key, { ...video, transcript: t.text }, "transcripcion");
+      else if (t === null) {
+        entry = { ...entry, src: "sin-transcripcion" }; // final: no captions exist
+        await chrome.storage.local.set({ [clsKey(video.id)]: entry });
+      } else {
+        // Server busy, down or blocked: decide provisionally, ask again later.
+        return push({ ...decideFromTopic(config, profile, entry), retry: true });
+      }
+    }
+    push(decideFromTopic(config, profile, entry));
+  } catch (e) {
+    lastError = String(e.message || e);
+    push({ action: "show", reason: `error: ${lastError}`, error: true });
+  } finally {
+    inflight.delete(video.id);
+  }
+}
+
+async function classify(videos, tabId) {
   const config = await getConfig();
-  const { override = null, cls = {}, stats = { ocultos: 0, mostrados: 0, errores: 0 } } =
-    await chrome.storage.local.get(["override", "cls", "stats"]);
-  const profile = activeProfile(config, new Date(), override);
-  if (!config.enabled) return { disabled: true, profile: { id: profile.id, nombre: profile.nombre }, decisions: {} };
+  const profile = activeProfile(config, new Date(), await getOverride());
+  const profileInfo = { id: profile.id, nombre: profile.nombre };
+  if (!config.enabled) return { disabled: true, profile: profileInfo, decisions: {} };
   const key = `${temasKey(config.temas)}.${CLS_VERSION}`;
   const decisions = {};
-  const open = []; // not decided by a rule
-  let lastError = null;
+  const open = [];
 
   for (const v of videos) {
     const ruled = applyRules(config, profile, v);
     if (ruled) decisions[v.id] = ruled;
+    else if (config.backend === "none") decisions[v.id] = { action: "show", reason: "sin clasificador" };
     else open.push(v);
   }
-  if (config.backend === "none") {
-    for (const v of open) decisions[v.id] = { action: "show", reason: "sin clasificador" };
-    open.length = 0;
-  }
 
-  const run = async (v, src) => {
-    try {
-      const c = await callClassifier(config, v);
-      cls[v.id] = { ...c, k: key, src, ts: Date.now() };
-    } catch (e) {
-      lastError = String(e.message || e);
-      stats.errores++;
-      decisions[v.id] = { action: "show", reason: `error: ${lastError}` };
-    }
-  };
-
-  // 1. Title first, for anything not cached under the current topic catalogue.
-  const fresh = open.filter((v) => cls[v.id]?.k !== key);
-  await pool(fresh, CONCURRENCY, (v) => run(v, "titulo"));
-
-  // 2. Doubtful title → description/category/keywords, fetched by the content
-  // script (same-origin) and sent back on its next request.
-  const withDetails = [];
+  const stored = open.length ? await chrome.storage.local.get(open.map((v) => clsKey(v.id))) : {};
+  const work = [];
   for (const v of open) {
-    if (decisions[v.id] || !needsDetails(config, profile, cls[v.id])) continue;
-    if (v.details === undefined) decisions[v.id] = { action: "pending", reason: "buscando descripción", needDetails: true };
-    else if (v.details) withDetails.push(v);
-    else cls[v.id].src = "detalles"; // fetch failed: move on to the transcript
-  }
-  await pool(withDetails, CONCURRENCY, (v) => run(v, "detalles"));
-
-  // 3. Still doubtful → transcript from the local server.
-  const doubtful = open.filter((v) => !decisions[v.id] && needsTranscript(config, profile, cls[v.id]));
-  const tr = await getTranscripts(config, doubtful.map((v) => v.id));
-  const withTranscript = [];
-  for (const v of doubtful) {
-    const t = tr?.items[v.id];
-    if (t && typeof t === "object") withTranscript.push({ ...v, transcript: t.text });
-    else if (t === null) cls[v.id].src = "sin-transcripcion"; // final: the title is all there is
-    else if (t === "pending" && !tr.blocked) decisions[v.id] = { action: "pending", reason: "esperando transcripción" };
-    // Server down or blocked: keep the title result; it is retried next time.
-  }
-  await pool(withTranscript, CONCURRENCY, (v) => run(v, "transcripcion"));
-
-  for (const v of open) if (!decisions[v.id]) decisions[v.id] = decideFromTopic(config, profile, cls[v.id]);
-
-  if (fresh.length) {
-    const ids = Object.keys(cls);
-    if (ids.length > CACHE_MAX) {
-      ids.sort((a, b) => cls[a].ts - cls[b].ts);
-      for (const id of ids.slice(0, ids.length - CACHE_MAX)) delete cls[id];
+    let entry = stored[clsKey(v.id)];
+    if (entry?.k !== key) entry = null;
+    const d = entry && decideCached(config, profile, v, entry);
+    if (d) decisions[v.id] = d;
+    else {
+      decisions[v.id] = { action: "pending", reason: "clasificando" };
+      work.push([v, entry]);
     }
   }
 
-  for (const v of videos) {
-    const a = decisions[v.id].action;
-    if (a === "hide") stats.ocultos++;
-    else if (a === "show") stats.mostrados++;
-  }
-  await gateFeedback(config, profile, videos, decisions);
-  await chrome.storage.local.set({ cls, stats, lastError });
-  return { profile: { id: profile.id, nombre: profile.nombre }, decisions };
+  const final = videos.filter((v) => decisions[v.id].action !== "pending");
+  await gateFeedbackSerial(config, profile, final, decisions);
+  for (const v of final) countDecision(decisions[v.id]);
+
+  const push = (v) => async (d) => {
+    await gateFeedbackSerial(config, profile, [v], { [v.id]: d });
+    if (d.action !== "pending") countDecision(d);
+    if (tabId != null)
+      chrome.tabs.sendMessage(tabId, { type: "decisions", profile: profileInfo, decisions: { [v.id]: d } }).catch(() => {});
+  };
+  for (const [v, entry] of work) advance(config, profile, key, v, entry, push(v));
+
+  return { profile: profileInfo, decisions };
 }
 
 async function feedbackResult({ id, ok, error }) {
@@ -208,7 +275,8 @@ async function feedbackResult({ id, ok, error }) {
 
 async function status() {
   const config = await getConfig();
-  const { override = null, stats = {}, lastError = null } = await chrome.storage.local.get(["override", "stats", "lastError"]);
+  const override = await getOverride();
+  const stored = await chrome.storage.local.get(["stats", "lastError"]);
   const profile = activeProfile(config, new Date(), override);
   return {
     enabled: config.enabled,
@@ -217,16 +285,21 @@ async function status() {
     profile: { id: profile.id, nombre: profile.nombre },
     override,
     perfiles: config.perfiles.map((p) => ({ id: p.id, nombre: p.nombre, desde: p.desde, hasta: p.hasta })),
-    stats,
-    lastError,
+    stats: stats || stored.stats || {},
+    lastError: lastError || stored.lastError || null,
   };
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const handlers = {
-    classify: () => classify(msg.videos),
+    classify: () => classify(msg.videos, sender.tab?.id),
     "feedback-result": () => feedbackResult(msg),
     status,
+    // Sent at document_start: wakes the worker and loads config before any
+    // card exists, so the first classify request skips the cold start.
+    warmup: async () => {
+      await Promise.all([getConfig(), getOverride()]);
+    },
     "set-override": () => chrome.storage.local.set({ override: msg.id || null }),
     "set-enabled": async () => {
       const config = await getConfig();

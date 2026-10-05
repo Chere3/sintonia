@@ -11,7 +11,7 @@
 [![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 [![Bun](https://img.shields.io/badge/tests-bun-black?logo=bun)](https://bun.sh)
 
-[Español](README.es.md) · [How it works](#how-it-works) · [Install](#install) · [Privacy](#what-leaves-your-machine) · [Limitations](#honest-limitations)
+[Español](README.es.md) · [Performance](#performance-you-never-see-an-unfiltered-card) · [How it works](#how-it-works) · [Install](#install) · [Privacy](#what-leaves-your-machine) · [Limitations](#honest-limitations)
 
 ![Sintonía hiding off-profile videos on the YouTube home feed](docs/img/feed.png)
 
@@ -31,6 +31,43 @@ it can't tell "not now" from "never". Sintonía adds the missing piece, **time**
 - You define **profiles by time of day**: what you want, what you avoid, and how strict to be.
 - Every recommendation is classified and either shown, or collapsed with the reason
   (`Hidden · gaming 84% · avoid 87% · Morning`, with a one-click *Show* button).
+
+## Performance: you never see an unfiltered card
+
+The point of a filter is lost if you can click a video before it's filtered. Sintonía is
+**fail-closed**: every card is invisible and unclickable from the first frame YouTube renders
+it, until it has a decision. The veil is plain CSS, injected before the page's DOM exists, so
+it doesn't depend on any script being fast. Measured on a live feed in Dia (Chromium), October
+2026:
+
+| | Before (0.1.0) | Now |
+|---|---|---|
+| Cards visible and clickable before being filtered | 21 of 21 | **0 of 101** |
+| Time an unfiltered video was clickable (p50) | 1,067 ms | **0 ms** |
+| Skeleton shown while deciding, cached video | — | 0–114 ms |
+| Skeleton shown while deciding, new video (p50) | — | 194–276 ms (one Jev round-trip) |
+
+Where the time went, and what fixed it:
+
+- **Cache reads were O(cache), not O(batch).** Every request read and rewrote the full
+  classification map (up to 5,000 entries). Now there's one storage key per video, and config
+  and profile live in memory.
+- **Batches waited for their slowest member.** Cached and rule-decided cards are now answered
+  immediately, and each new classification is pushed to the tab as soon as it resolves.
+- **The scan was debounced during rendering.** YouTube mutates the DOM continuously while it
+  paints a feed, so a 300 ms debounce kept postponing itself. It's now a 50 ms throttle that
+  never pushes back a scheduled scan (cache hits went from 163 ms to 34 ms).
+- **SPA navigation reported the old page.** YouTube renders the home cards before it updates
+  `location`, so they were scanned only after navigation finished. The target path now comes
+  from `yt-navigate-start`.
+- **Recycled cards.** YouTube reuses the outer card across feeds but always creates a new inner
+  `yt-lockup-view-model`, so the "decided" mark lives on the inner element: a recycled card is
+  veiled by construction.
+
+Reproduce it with [`tools/measure.js`](tools/measure.js) in the DevTools console.
+
+If no decision arrives within 4 s (dead worker, missing key), the card is shown anyway, so a
+failure never blanks YouTube.
 
 ## What it does
 
@@ -145,6 +182,7 @@ any third party. The transcript server only talks to YouTube.
 - **Clickbait can still win.** A confidently misleading title is classified and cached as is.
   *Clear cache* in the options, or a channel allow-list entry, fixes it.
 - **Home feed, watch sidebar and autoplay only.** Shorts, search and subscriptions are untouched.
+- **The end-of-video suggestion grid is not filtered yet**, only the autoplay pick.
 - **The autoplay guard was verified with a simulated end of video**, not yet across many real
   autoplay countdowns. Reports welcome.
 

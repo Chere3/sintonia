@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 
-[English](README.md) · [Cómo funciona](#cómo-funciona) · [Instalación](#instalación) · [Privacidad](#qué-sale-de-tu-computadora) · [Limitaciones](#limitaciones-honestas)
+[English](README.md) · [Rendimiento](#rendimiento-nunca-ves-una-tarjeta-sin-filtrar) · [Cómo funciona](#cómo-funciona) · [Instalación](#instalación) · [Privacidad](#qué-sale-de-tu-computadora) · [Limitaciones](#limitaciones-honestas)
 
 ![Sintonía ocultando videos fuera de perfil en el inicio de YouTube](docs/img/feed.png)
 
@@ -30,6 +30,39 @@ no distingue «ahora no» de «nunca». Sintonía agrega la pieza que falta, **l
 - Defines **perfiles por franja horaria**: qué quieres, qué evitas y qué tan estricto ser.
 - Cada recomendación se clasifica y se muestra, o se colapsa con el motivo
   (`Oculto · gaming 84% · evitar 87% · Mañana`, con un botón *Ver*).
+
+## Rendimiento: nunca ves una tarjeta sin filtrar
+
+Un filtro no sirve si puedes abrir un video antes de que se filtre. Sintonía es **fail-closed**:
+cada tarjeta es invisible y no se puede pulsar desde el primer cuadro en que YouTube la pinta,
+hasta que tiene decisión. El velo es CSS puro, inyectado antes de que exista el DOM, así que no
+depende de que ningún script sea rápido. Medido en un feed real en Dia (Chromium), octubre de 2026:
+
+| | Antes (0.1.0) | Ahora |
+|---|---|---|
+| Tarjetas visibles y clicables antes de filtrarse | 21 de 21 | **0 de 101** |
+| Tiempo con un video sin filtrar clicable (p50) | 1,067 ms | **0 ms** |
+| Esqueleto mientras decide, video en caché | — | 0–114 ms |
+| Esqueleto mientras decide, video nuevo (p50) | — | 194–276 ms (una llamada a Jev) |
+
+De dónde salía el tiempo:
+
+- **La caché costaba O(caché) y no O(lote).** Cada petición leía y reescribía el mapa completo
+  (hasta 5,000 entradas). Ahora hay una clave por video, y la configuración y el perfil viven en memoria.
+- **Cada lote esperaba al video más lento.** Lo que está en caché o decide una regla se responde al
+  instante, y cada clasificación nueva se manda a la pestaña en cuanto existe.
+- **El escaneo tenía un debounce durante el render.** YouTube muta el DOM sin parar mientras pinta el
+  feed, así que el debounce de 300 ms se posponía solo. Ahora es un throttle de 50 ms (aciertos de
+  caché: de 163 ms a 34 ms).
+- **La navegación SPA reportaba la página anterior.** YouTube pinta el inicio antes de cambiar
+  `location`; la ruta de destino ahora sale de `yt-navigate-start`.
+- **Tarjetas recicladas.** YouTube reutiliza la tarjeta exterior pero crea un `yt-lockup-view-model`
+  nuevo por video, así que la marca de «decidido» vive en ese elemento: una tarjeta reciclada nace cubierta.
+
+Se reproduce con [`tools/measure.js`](tools/measure.js) en la consola de DevTools.
+
+Si en 4 s no llega decisión (worker caído, falta la key), la tarjeta se muestra igual, para que un
+fallo nunca deje YouTube en blanco.
 
 ## Qué hace
 
@@ -105,6 +138,7 @@ de transcripts solo habla con YouTube.
 - **El clickbait aún puede ganar.** Un título engañoso clasificado con confianza queda en caché.
   «Borrar caché» o una regla de canal lo corrigen.
 - **Solo inicio, barra lateral y autoplay.** Shorts, búsqueda y suscripciones no se tocan.
+- **La cuadrícula de sugerencias al terminar un video aún no se filtra**, solo el video del autoplay.
 - **El autoplay se verificó con un fin de video simulado**, todavía no con muchas cuentas regresivas
   reales.
 

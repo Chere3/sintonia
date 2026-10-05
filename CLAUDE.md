@@ -17,9 +17,13 @@ Sin paso de build: los cambios se ven al recargar la extensión en `chrome://ext
 
 ## Invariantes
 
+- **Fail-closed: ninguna tarjeta es clicable antes de tener decisión.** `content.css` aplica `visibility: hidden` a todo `yt-lockup-view-model` sin `data-sintonia-decided` en las páginas marcadas con `html[data-sintonia-page]` (`home`/`watch`). La marca va en el **lockup** y no en la tarjeta: YouTube reutiliza `ytd-rich-item-renderer` entre feeds, pero crea un lockup nuevo por video (medido: 0 de 23 reutilizados), así que una tarjeta reciclada nace cubierta. Hay dos salidas obligatorias: con `enabled: false` el atributo de página se quita, y a los `WATCHDOG_MS` (4 s) sin decisión la tarjeta se muestra. No quites ninguna de las dos, o un worker caído deja YouTube en blanco.
+- **La ruta sale de `pagePath`, no de `location.pathname`.** YouTube pinta las tarjetas del inicio antes de actualizar la URL; `yt-navigate-start` da la ruta de destino.
+- **El escaneo usa throttle, no debounce** (`scheduleScan`): durante el render el DOM muta sin parar y un debounce se posponía solo.
+- **El service worker responde al instante y luego empuja resultados** (`advance` → `chrome.tabs.sendMessage({type:"decisions"})`). Las respuestas con `pending` mantienen el velo; las con `retry` (transcript ocupado o bloqueado) son decisiones provisionales que el content script vuelve a pedir a los `RECHECK_MS`. La caché va por video (`cls:<id>`); config y override se cachean en memoria y se invalidan con `storage.onChanged`. Para medir, pega `tools/measure.js` en la consola de DevTools; cuenta las tarjetas expuestas en el primer vistazo (siempre debe ser 0) y la duración del velo.
 - **YouTube recicla nodos al hacer scroll.** Todo se indexa por video id (clase `content-id-XXXXXXXXXXX` en `.ytLockupViewModelHost`). `scan()` compara `dataset.sintoniaId` con el id actual y limpia las marcas si cambió. Nunca guardes estado en el nodo sin esa comprobación.
 - **Hay otra extensión de Diego que inyecta `.cbCustomTitle` dentro del título.** `extract()` la ignora; si no, el título sale duplicado.
-- **La clasificación no depende del perfil.** Hay una sola pregunta `choice` sobre todos los temas, cacheada como `cls[id] = {topic, confidence, k}`, donde `k = temasKey(temas)`. Al cambiar los temas se invalida sola. El perfil solo se aplica en `decideFromTopic`.
+- **La clasificación no depende del perfil.** Hay una sola pregunta `choice` sobre todos los temas, cacheada en `cls:<id>` como `{topic, confidence, probabilities, src, k}`, donde `k = temasKey(temas)`. Al cambiar los temas se invalida sola. El perfil solo se aplica en `decideFromTopic`.
 - **Primero la señal más barata:** título → detalles → transcripción. Todo video nuevo se clasifica por título (`src: "titulo"`). Si queda dudoso, el background responde `pending` + `needDetails` y el content script pide a `/youtubei/v1/player` (mismo origen, ~10–15 KB, sin PO token) la categoría de YouTube, las etiquetas y la descripción. Las devuelve en `video.details` y se reclasifica (`src: "detalles"`). Si sigue dudoso, se pide la transcripción al servidor (`src: "transcripcion"`, o `"sin-transcripcion"` si no hay). Si el servidor está caído o bloqueado, se conserva el resultado anterior y se reintenta en la siguiente visita. El motivo: unos 45 transcripts en ráfaga bastaron para que YouTube bloqueara la IP (`IpBlocked`).
 - **«Dudoso» depende del perfil activo y la decisión usa masa de probabilidad.** `decideFromTopic` suma las `probabilities` de Jev de los temas en `quiero` y en `evitar`; no mira solo el tema ganador. Por ejemplo, «programación 46 / ciencia 39 / tecnología 15» es un sí claro para la mañana. `needsDetails` y `needsTranscript` solo piden más información si esa suma no alcanza el `umbral` en ninguna dirección; si el perfil ya decidió, no se gasta nada. `CLS_VERSION` en `background.js` invalida la caché cuando cambia la forma de las entradas (v2 añadió `probabilities`).
 - **Migraciones de config:** `migrateConfig` (`CONFIG_VERSION`) agrega temas nuevos a configuraciones guardadas sin pisar descripciones editadas. Al agregar temas por defecto, súbele la versión y extiende `V2_TOPICS` (o crea un `V3_TOPICS`).
@@ -32,7 +36,7 @@ Sin paso de build: los cambios se ven al recargar la extensión en `chrome://ext
 
 ## Claves de storage
 
-`config`, `override`, `cls`, `stats`, `lastError`, `feedbackLog`, `feedbackSent`, `feedbackDone`.
+`config`, `override`, `cls:<videoId>` (una por video), `stats`, `lastError`, `feedbackLog`, `feedbackSent`, `feedbackDone`.
 
 ## Convenciones
 

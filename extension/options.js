@@ -76,7 +76,8 @@ $("reset").addEventListener("click", () => {
 });
 
 $("clearCache").addEventListener("click", async () => {
-  await chrome.storage.local.remove(["cls", "feedbackDone", "stats"]);
+  const keys = Object.keys(await chrome.storage.local.get(null)).filter((k) => k.startsWith("cls:"));
+  await chrome.storage.local.remove([...keys, "cls", "feedbackDone", "stats"]);
   say("Caché borrada.", true);
 });
 
