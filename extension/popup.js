@@ -18,15 +18,17 @@ async function render() {
   for (const p of s.perfiles) sel.append(new Option(`${p.nombre} · ${p.desde}–${p.hasta}`, p.id));
   sel.value = s.override || "";
 
-  try {
-    const { config } = await chrome.storage.local.get("config");
-    const url = (config?.transcripts?.url || "http://127.0.0.1:8765").replace(/\/$/, "");
-    const h = await (await fetch(`${url}/health`, { signal: AbortSignal.timeout(1500) })).json();
-    $("server").textContent = h.bloqueado ? "bloqueado por YouTube" : `en línea (cola ${h.cola})`;
-    $("serverDot").className = `dot ${h.bloqueado ? "bad" : "ok"}`;
-  } catch {
-    $("server").textContent = "apagado (clasifica solo por título)";
-    $("serverDot").className = "dot bad";
+  const t = s.transcripts || {};
+  if (!t.activo) {
+    $("tr").textContent = "apagadas (solo título y descripción)";
+    $("trDot").className = "dot";
+  } else if (t.blockedUntil) {
+    const until = new Date(t.blockedUntil).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+    $("tr").textContent = `YouTube las bloquea hasta las ${until}`;
+    $("trDot").className = "dot bad";
+  } else {
+    $("tr").textContent = t.queue ? `activas (cola ${t.queue})` : "activas";
+    $("trDot").className = "dot ok";
   }
 }
 

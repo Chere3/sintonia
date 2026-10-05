@@ -43,10 +43,9 @@
   <div class="grid card">
     <label><span>Usar transcripciones</span>
       <select id="tActivo"><option value="true">Sí</option><option value="false">No, solo título</option></select></label>
-    <label><span>URL del servidor local</span><input id="tUrl"></label>
     <label><span>Caracteres enviados al clasificador</span><input id="tChars" type="number" min="200" max="6000" step="100"></label>
   </div>
-  <p class="hint">Con Jev, el inicio de cada transcripción sale de tu Mac hacia api.typesafe.ai. Con Laya todo queda local.</p>
+  <p class="hint">Solo se piden para videos que siguen dudosos después del título y la descripción, una a la vez, porque YouTube bloquea la IP si se piden muchas seguidas. Con Jev, el inicio de cada transcripción sale de tu computadora hacia api.typesafe.ai; con Laya todo queda local.</p>
 
   <h2>Feedback a YouTube</h2>
   <div class="grid card">

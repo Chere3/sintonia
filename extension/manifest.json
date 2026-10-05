@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Sintonía",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Filtra y reentrena tu feed de YouTube según tus temas y la hora del día.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://api.typesafe.ai/*",
-    "http://127.0.0.1/*",
     "http://localhost/*"
   ],
   "background": { "service_worker": "background.js", "type": "module" },

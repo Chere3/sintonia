@@ -96,8 +96,8 @@ failure never blanks YouTube.
           └──────────────────────────────────────▶ 2. classify again ── confident? ──▶ decide
                                                   │ still doubtful
                                                   ▼
-                                   3. transcript from local server ──▶ classify ──▶ decide
-                                      (youtube-transcript-api, cached in SQLite)
+                                   3. transcript, fetched by the service worker ──▶ classify ──▶ decide
+                                      (same requests as youtube-transcript-api, cached per video)
 ```
 
 **Cheapest signal first.** Titles are often clickbait, so the extension escalates only when the
@@ -120,12 +120,11 @@ that speaks the same protocol, can be used as a local backend instead.
 
 ## Install
 
-Requirements: a Chromium browser (Chrome, Arc, Brave, Dia…), [uv](https://docs.astral.sh/uv/),
-and a Jev API key (or a local Laya server).
+Requirements: a Chromium browser (Chrome, Arc, Brave, Dia…) and a Jev API key (or a local
+Laya server). Nothing else to install or run.
 
 ```bash
 git clone https://github.com/Chere3/sintonia.git
-cd sintonia/server && uv run server.py      # transcript server on 127.0.0.1:8765 (optional)
 ```
 
 1. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked** and pick the
@@ -133,8 +132,8 @@ cd sintonia/server && uv run server.py      # transcript server on 127.0.0.1:876
 2. Open the extension's options, paste your Jev key, and edit topics and profiles.
 3. Open YouTube.
 
-The transcript server is optional: without it, Sintonía classifies on title, description and
-category only.
+Or skip the clone: download the zip from the [latest release](https://github.com/Chere3/sintonia/releases/latest)
+and load the unzipped folder.
 
 <details>
 <summary>Example profile</summary>
@@ -167,13 +166,13 @@ are hidden. Config keys are in Spanish, like the rest of the UI.
 | Everything | Nowhere | With the Laya backend, it all stays local |
 
 Sintonía never reads your watch history or cookies, and sends nothing about your account to
-any third party. The transcript server only talks to YouTube.
+any third party. Transcript requests go to YouTube without cookies, so they aren't tied to your account.
 
 ## Honest limitations
 
 - **YouTube rate-limits transcript scraping.** About 45 transcripts in a short burst got a
-  residential IP blocked (`IpBlocked`). That's why transcripts are the last resort, the server runs
-  a single worker with 2–4 s jitter, and it backs off for 30 min (doubling) on a block. Cached
+  residential IP blocked (`IpBlocked`). That's why transcripts are the last resort, fetched
+  one at a time with 2–4 s jitter, with a 30 min backoff (doubling) on a block. Cached
   transcripts keep working while blocked.
 - **The Laya backend is untested end-to-end.** It speaks the same wire protocol as Jev, but the base
   checkpoint is near chance zero-shot, so use the fine-tuned `typed-decisions` model.

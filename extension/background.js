@@ -11,6 +11,7 @@ import {
   needsDetails,
   migrateConfig,
 } from "./core.js";
+import * as transcripts from "./transcripts.js";
 
 const LOG_MAX = 300;
 const CONCURRENCY = 20; // Jev allows 40 rps; a page is rarely more than 50 cards
@@ -103,24 +104,6 @@ async function callClassifier(config, video) {
   return parseAnswer(await res.json());
 }
 
-// Asks the local server for transcripts. Returns { blocked, items } or null
-// when the server is unreachable. Cached items are valid even while blocked.
-async function getTranscripts(config, ids) {
-  if (!ids.length) return null;
-  try {
-    const res = await fetch(`${config.transcripts.url.replace(/\/$/, "")}/transcripts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
-      signal: AbortSignal.timeout(3000),
-    });
-    const data = await res.json();
-    return { blocked: data.status !== "ok", items: data.items || {} };
-  } catch {
-    return null;
-  }
-}
-
 async function appendLog(entries) {
   if (!entries.length) return;
   const { feedbackLog = [] } = await chrome.storage.local.get("feedbackLog");
@@ -203,13 +186,13 @@ async function advance(config, profile, key, video, entry, push) {
       }
     }
     if (needsTranscript(config, profile, entry)) {
-      const t = (await getTranscripts(config, [video.id]))?.items[video.id];
+      const t = (await transcripts.lookup([video.id])).items[video.id];
       if (t && typeof t === "object") entry = await classifyAndStore(config, key, { ...video, transcript: t.text }, "transcripcion");
       else if (t === null) {
         entry = { ...entry, src: "sin-transcripcion" }; // final: no captions exist
         await chrome.storage.local.set({ [clsKey(video.id)]: entry });
       } else {
-        // Server busy, down or blocked: decide provisionally, ask again later.
+        // Queued or blocked: decide provisionally, ask again later.
         return push({ ...decideFromTopic(config, profile, entry), retry: true });
       }
     }
@@ -276,7 +259,7 @@ async function feedbackResult({ id, ok, error }) {
 async function status() {
   const config = await getConfig();
   const override = await getOverride();
-  const stored = await chrome.storage.local.get(["stats", "lastError"]);
+  const [stored, tr] = await Promise.all([chrome.storage.local.get(["stats", "lastError"]), transcripts.status()]);
   const profile = activeProfile(config, new Date(), override);
   return {
     enabled: config.enabled,
@@ -285,6 +268,7 @@ async function status() {
     profile: { id: profile.id, nombre: profile.nombre },
     override,
     perfiles: config.perfiles.map((p) => ({ id: p.id, nombre: p.nombre, desde: p.desde, hasta: p.hasta })),
+    transcripts: { activo: config.transcripts.activo, ...tr },
     stats: stats || stored.stats || {},
     lastError: lastError || stored.lastError || null,
   };

@@ -10,7 +10,6 @@ function fill(c) {
   $("layaUrl").value = c.layaUrl;
   $("umbral").value = c.umbral;
   $("tActivo").value = String(c.transcripts.activo);
-  $("tUrl").value = c.transcripts.url;
   $("tChars").value = c.transcripts.chars;
   $("fModo").value = c.feedback.modo;
   $("fUmbral").value = c.feedback.umbral;
@@ -59,7 +58,7 @@ $("save").addEventListener("click", async () => {
       jevKey: $("jevKey").value.trim(),
       layaUrl: $("layaUrl").value.trim(),
       umbral: Number($("umbral").value),
-      transcripts: { activo: $("tActivo").value === "true", url: $("tUrl").value.trim(), chars: Number($("tChars").value) },
+      transcripts: { activo: $("tActivo").value === "true", chars: Number($("tChars").value) },
       feedback: { modo: $("fModo").value, umbral: Number($("fUmbral").value), maxPorHora: Number($("fMax").value) },
     };
     await chrome.storage.local.set({ config });
@@ -76,7 +75,7 @@ $("reset").addEventListener("click", () => {
 });
 
 $("clearCache").addEventListener("click", async () => {
-  const keys = Object.keys(await chrome.storage.local.get(null)).filter((k) => k.startsWith("cls:"));
+  const keys = Object.keys(await chrome.storage.local.get(null)).filter((k) => k.startsWith("cls:")); // transcripts (tr:*) are kept: they are rate-limited
   await chrome.storage.local.remove([...keys, "cls", "feedbackDone", "stats"]);
   say("Caché borrada.", true);
 });

@@ -8,7 +8,7 @@ export const DEFAULT_CONFIG = {
   backend: "jev", // "jev" | "laya" | "none"
   jevKey: "",
   layaUrl: "http://localhost:8000",
-  transcripts: { activo: true, url: "http://127.0.0.1:8765", chars: 1800 },
+  transcripts: { activo: true, chars: 1800 },
   umbral: 0.7, // min classifier confidence to act on a topic
   feedback: {
     modo: "simulado", // "apagado" | "simulado" | "activo"

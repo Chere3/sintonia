@@ -81,7 +81,7 @@ fallo nunca deje YouTube en blanco.
 Va **de la señal más barata a la más cara**. Primero clasifica por título, canal y duración. Si el
 perfil activo aún no puede decidir, le pide a YouTube la categoría, las etiquetas y la descripción
 del video (mismo origen, ~10–15 KB). Solo si sigue dudoso usa el inicio de la transcripción, que
-saca un servidor local con `youtube-transcript-api`. En un inicio real quedaron **0 videos dudosos
+descarga el propio service worker con las mismas peticiones que `youtube-transcript-api`. En un inicio real quedaron **0 videos dudosos
 de 24**, sin pedir ni una transcripción.
 
 **Decide por suma de probabilidades, no por el tema ganador.** El clasificador contesta una sola
@@ -98,12 +98,11 @@ pesos abiertos con el mismo protocolo, puede usarse como backend local.
 
 ## Instalación
 
-Necesitas un navegador Chromium (Chrome, Arc, Brave, Dia…), [uv](https://docs.astral.sh/uv/) y una
-key de Jev (o un servidor Laya local).
+Necesitas un navegador Chromium (Chrome, Arc, Brave, Dia…) y una key de Jev (o un servidor Laya
+local). No hay nada más que instalar ni arrancar.
 
 ```bash
 git clone https://github.com/Chere3/sintonia.git
-cd sintonia/server && uv run server.py      # transcripts en 127.0.0.1:8765 (opcional)
 ```
 
 1. Abre `chrome://extensions`, activa el **modo desarrollador**, pulsa **Cargar descomprimida** y
@@ -111,7 +110,8 @@ cd sintonia/server && uv run server.py      # transcripts en 127.0.0.1:8765 (opc
 2. En las opciones de la extensión pega tu key de Jev y ajusta temas y perfiles.
 3. Abre YouTube.
 
-Sin el servidor, Sintonía clasifica solo con título, descripción y categoría.
+O sin clonar: baja el zip de la [última release](https://github.com/Chere3/sintonia/releases/latest)
+y carga la carpeta descomprimida.
 
 ## Qué sale de tu computadora
 
@@ -122,14 +122,14 @@ Sin el servidor, Sintonía clasifica solo con título, descripción y categoría
 | Primeros ~1,800 caracteres de la transcripción | API de Jev | Solo si sigue dudoso |
 | Todo | Ningún lado | Con el backend Laya, todo queda local |
 
-Sintonía no lee tu historial ni tus cookies, y no envía nada de tu cuenta a terceros. El servidor
-de transcripts solo habla con YouTube.
+Sintonía no lee tu historial ni tus cookies, y no envía nada de tu cuenta a terceros. Las peticiones
+de transcripts van a YouTube sin cookies, así que no quedan ligadas a tu cuenta.
 
 ## Limitaciones honestas
 
 - **YouTube limita la descarga de transcripts.** Unos 45 transcripts en ráfaga bastaron para que
-  bloqueara una IP residencial (`IpBlocked`). Por eso la transcripción es el último recurso, el
-  servidor usa un solo worker con pausas de 2–4 s y, ante un bloqueo, espera 30 min (y duplica). Los
+  bloqueara una IP residencial (`IpBlocked`). Por eso la transcripción es el último recurso: se
+  pide una a la vez, con pausas de 2–4 s y, ante un bloqueo, espera 30 min (y duplica). Los
   transcripts en caché siguen funcionando durante el bloqueo.
 - **El backend Laya no está probado de punta a punta.** Usa el mismo protocolo que Jev, pero el
   modelo base acierta casi al azar sin entrenar; usa el checkpoint `typed-decisions`.

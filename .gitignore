@@ -1,4 +1,2 @@
-server/.venv/
-server/transcripts.db
 .DS_Store
 dist/
