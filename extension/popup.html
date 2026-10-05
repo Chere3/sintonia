@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Sintonía</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { width: 300px; padding: 14px; }
+    .profile { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin: 2px 0 0; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 12px; }
+    .stats div { text-align: center; }
+    .stats b { display: block; font-size: 16px; }
+    .stack > * + * { margin-top: 10px; }
+    select { width: 100%; }
+    #error { color: var(--bad); font-size: 12px; word-break: break-word; }
+  </style>
+</head>
+<body class="stack">
+  <div class="row">
+    <h1>Sintonía</h1>
+    <label class="muted"><input type="checkbox" id="enabled"> activa</label>
+  </div>
+  <div class="card">
+    <div class="muted" id="profileLabel">Perfil activo</div>
+    <div class="profile" id="profile">—</div>
+    <div class="stats">
+      <div><b id="ocultos">0</b><span class="muted">ocultos</span></div>
+      <div><b id="mostrados">0</b><span class="muted">mostrados</span></div>
+      <div><b id="errores">0</b><span class="muted">errores</span></div>
+    </div>
+  </div>
+  <label class="muted" for="override">Forzar perfil</label>
+  <select id="override"></select>
+  <div class="muted">
+    <div><span class="dot" id="serverDot"></span>Transcripts: <span id="server">…</span></div>
+    <div>Clasificador: <span id="backend"></span> · Feedback: <span id="feedback"></span></div>
+  </div>
+  <div id="error"></div>
+  <div class="row"><a href="#" id="options">Configuración y registro</a></div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

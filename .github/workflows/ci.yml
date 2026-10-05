@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  extension:
+    name: core tests + bundle check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Tests de core.js
+        run: bun test
+
+      - name: Las páginas de la extensión compilan
+        run: bun build extension/background.js extension/content.js extension/popup.js extension/options.js --outdir /tmp/sintonia-build
+
+      - name: manifest.json válido
+        run: python3 -c "import json; json.load(open('extension/manifest.json'))"
+
+  server:
+    name: servidor de transcripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Dependencias e import
+        working-directory: server
+        run: uv run python -c "import ast; ast.parse(open('server.py').read()); import youtube_transcript_api"

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sintonía · Configuración</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    main { max-width: 860px; margin: 0 auto; padding: 28px 16px 60px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    label { display: block; }
+    label > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    label input, label select { width: 100%; }
+    textarea { width: 100%; min-height: 420px; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; }
+    .actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+    #msg.bad { color: var(--bad); } #msg.ok { color: var(--ok); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    .tablewrap { overflow-x: auto; }
+    .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Sintonía</h1>
+  <p class="muted">Filtra el inicio de YouTube según tus temas y la hora, y opcionalmente le dice a YouTube «No me interesa».</p>
+
+  <h2>Clasificador</h2>
+  <div class="grid card">
+    <label><span>Backend</span>
+      <select id="backend">
+        <option value="jev">Jev (TypeSafe, nube)</option>
+        <option value="laya">Laya (local, laya-serve)</option>
+        <option value="none">Ninguno (solo reglas)</option>
+      </select></label>
+    <label><span>Key de Jev</span><input id="jevKey" type="password" autocomplete="off"></label>
+    <label><span>URL de Laya</span><input id="layaUrl"></label>
+    <label><span>Confianza mínima para actuar (0–1)</span><input id="umbral" type="number" min="0" max="1" step="0.05"></label>
+  </div>
+
+  <h2>Transcripciones</h2>
+  <div class="grid card">
+    <label><span>Usar transcripciones</span>
+      <select id="tActivo"><option value="true">Sí</option><option value="false">No, solo título</option></select></label>
+    <label><span>URL del servidor local</span><input id="tUrl"></label>
+    <label><span>Caracteres enviados al clasificador</span><input id="tChars" type="number" min="200" max="6000" step="100"></label>
+  </div>
+  <p class="hint">Con Jev, el inicio de cada transcripción sale de tu Mac hacia api.typesafe.ai. Con Laya todo queda local.</p>
+
+  <h2>Feedback a YouTube</h2>
+  <div class="grid card">
+    <label><span>Modo</span>
+      <select id="fModo">
+        <option value="apagado">Apagado</option>
+        <option value="simulado">Simulado (solo registra)</option>
+        <option value="activo">Activo (hace clic en tu cuenta)</option>
+      </select></label>
+    <label><span>Confianza mínima para marcar</span><input id="fUmbral" type="number" min="0" max="1" step="0.05"></label>
+    <label><span>Máximo por hora</span><input id="fMax" type="number" min="0" max="60"></label>
+  </div>
+
+  <h2>Temas, perfiles y reglas</h2>
+  <textarea id="json" spellcheck="false"></textarea>
+  <p class="hint">
+    <b>temas</b>: nombre → descripción (lo que ve el clasificador). Cada perfil tiene <b>desde/hasta</b> (HH:MM, puede cruzar medianoche),
+    <b>quiero</b>/<b>evitar</b> (nombres de temas) y <b>estricto</b> (oculta todo lo que no esté en «quiero»).
+    <b>canales</b> y <b>palabras</b> con permitir/bloquear ganan sobre el clasificador; <b>global</b> aplica en todos los perfiles.
+    El feedback a YouTube solo se envía por reglas de <b>global</b> y por temas que estén en «evitar» de <b>todos</b> los perfiles.
+  </p>
+
+  <div class="actions">
+    <button class="primary" id="save">Guardar</button>
+    <button id="reset">Restaurar valores por defecto</button>
+    <button id="clearCache">Borrar caché de clasificaciones</button>
+    <span id="msg"></span>
+  </div>
+
+  <h2>Registro de feedback</h2>
+  <div class="tablewrap card">
+    <table>
+      <thead><tr><th>Hora</th><th>Estado</th><th>Tipo</th><th>Video</th><th>Motivo</th></tr></thead>
+      <tbody id="log"></tbody>
+    </table>
+  </div>
+</main>
+<script type="module" src="options.js"></script>
+</body>
+</html>
